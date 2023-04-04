@@ -18,4 +18,15 @@ interface IKlimaRetirementAggregator {
     function klimaRetirementStorage() external pure returns (address);
 
     function treasury() external pure returns (address);
+
+    function retireCarbonSpecific(
+        address _sourceToken,
+        address _poolToken,
+        uint256 _amount,
+        bool _amountInCarbon,
+        address _beneficiaryAddress,
+        string memory _beneficiaryString,
+        string memory _retirementMessage,
+        address[] memory _carbonList
+    ) external;
 }

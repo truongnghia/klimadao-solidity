@@ -19,6 +19,7 @@ import "./interfaces/IToucanContractRegistry.sol";
 import "./interfaces/IToucanPool.sol";
 import "./interfaces/IToucanCarbonOffsets.sol";
 import "./interfaces/IKlimaRetirementAggregator.sol";
+import "../infinity/interfaces/IKlimaInfinity.sol";
 
 contract RetireToucanCarbon is Initializable, ContextUpgradeable, OwnableUpgradeable, IERC721ReceiverUpgradeable {
     using SafeERC20Upgradeable for IERC20Upgradeable;
@@ -38,6 +39,7 @@ contract RetireToucanCarbon is Initializable, ContextUpgradeable, OwnableUpgrade
     mapping(address => address) public poolRouter;
     address public toucanRegistry;
     uint256 public lastTokenId;
+    address constant infinity = 0x8cE54d9625371fb2a068986d32C85De8E6e995f8;
 
     /** === Event Setup === */
 
@@ -85,25 +87,41 @@ contract RetireToucanCarbon is Initializable, ContextUpgradeable, OwnableUpgrade
     ) public {
         require(isPoolToken[_poolToken], "Not a Toucan Carbon Token");
 
-        uint256 fee;
-        (_amount, fee) = _prepareRetire(_sourceToken, _poolToken, _amount, _amountInCarbon, _retiree);
+        uint256 totalSource = !_amountInCarbon
+            ? _amount
+            : IKlimaInfinity(infinity).getSourceAmountDefaultRetirement(_sourceToken, _poolToken, _amount);
 
-        // At this point _amount = the amount of carbon to retire
+        IERC20Upgradeable(_sourceToken).transferFrom(_msgSender(), address(this), totalSource);
 
-        // Retire the tokens
-        _retireCarbon(
-            _amount,
-            _retireEntityString,
-            _beneficiaryAddress,
-            _beneficiaryString,
-            _retirementMessage,
-            _poolToken
-        );
+        IERC20Upgradeable(_sourceToken).safeIncreaseAllowance(infinity, totalSource);
 
-        // Send the fee to the treasury
-        if (feeAmount > 0) {
-            IERC20Upgradeable(_poolToken).safeTransfer(IKlimaRetirementAggregator(masterAggregator).treasury(), fee);
-        }
+        if (_amountInCarbon)
+            IKlimaInfinity(infinity).retireExactCarbonDefault(
+                _sourceToken,
+                _poolToken,
+                totalSource,
+                _amount,
+                _retireEntityString,
+                _beneficiaryAddress,
+                _beneficiaryString,
+                _retirementMessage,
+                0
+            );
+        else
+            IKlimaInfinity(infinity).retireExactSourceDefault(
+                _sourceToken,
+                _poolToken,
+                totalSource,
+                _retireEntityString,
+                _beneficiaryAddress,
+                _beneficiaryString,
+                _retirementMessage,
+                0
+            );
+
+        // Account for potential leftover trade dust and return to caller
+        uint256 remainingSource = IERC20Upgradeable(_sourceToken).balanceOf(address(this));
+        if (remainingSource > 0) IERC20Upgradeable(_sourceToken).transfer(_retiree, remainingSource);
     }
 
     /**
@@ -180,31 +198,47 @@ contract RetireToucanCarbon is Initializable, ContextUpgradeable, OwnableUpgrade
         address[] memory _carbonList
     ) public {
         require(isPoolToken[_poolToken], "Not a Toucan Carbon Token");
+        require(_carbonList.length == 1, "Can only redeem one project");
 
         // Transfer source tokens
         // After swapping _amount = the amount of carbon to retire
 
-        uint256 fee;
-        (_amount, fee) = _prepareRetireSpecific(_sourceToken, _poolToken, _amount, _amountInCarbon, _retiree);
+        uint256 totalSource = !_amountInCarbon
+            ? _amount
+            : IKlimaInfinity(infinity).getSourceAmountSpecificRetirement(_sourceToken, _poolToken, _amount);
 
-        // Retire the tokens
-        _retireCarbonSpecific(
-            _amount,
-            _retireEntityString,
-            _beneficiaryAddress,
-            _beneficiaryString,
-            _retirementMessage,
-            _poolToken,
-            _carbonList
-        );
+        IERC20Upgradeable(_sourceToken).transferFrom(_msgSender(), address(this), totalSource);
 
-        // Send the fee to the treasury
-        if (feeAmount > 0) {
-            IERC20Upgradeable(_poolToken).safeTransfer(
-                IKlimaRetirementAggregator(masterAggregator).treasury(),
-                IERC20Upgradeable(_poolToken).balanceOf(address(this))
+        IERC20Upgradeable(_sourceToken).safeIncreaseAllowance(infinity, totalSource);
+
+        if (_amountInCarbon)
+            IKlimaInfinity(infinity).retireExactCarbonSpecific(
+                _sourceToken,
+                _poolToken,
+                _carbonList[0],
+                totalSource,
+                _amount,
+                _retireEntityString,
+                _beneficiaryAddress,
+                _beneficiaryString,
+                _retirementMessage,
+                0
             );
-        }
+        else
+            IKlimaInfinity(infinity).retireExactSourceSpecific(
+                _sourceToken,
+                _poolToken,
+                _carbonList[0],
+                totalSource,
+                _retireEntityString,
+                _beneficiaryAddress,
+                _beneficiaryString,
+                _retirementMessage,
+                0
+            );
+
+        uint256 remainingSource = IERC20Upgradeable(_sourceToken).balanceOf(address(this));
+        if (remainingSource > 0) IERC20Upgradeable(_sourceToken).transfer(_retiree, remainingSource);
     }
 
     /**
@@ -510,16 +544,17 @@ contract RetireToucanCarbon is Initializable, ContextUpgradeable, OwnableUpgrade
         uint256 totalAmount = _poolAmount + fee;
 
         if (_specificRetire) {
-            totalAmount = totalAmount + _getSpecificCarbonFee(_poolToken, _poolAmount);
-        }
-
-        if (_sourceToken != _poolToken) {
-            address[] memory path = getSwapPath(_sourceToken, _poolToken);
-
-            uint256[] memory amountIn = IUniswapV2Router02(poolRouter[_poolToken]).getAmountsIn(totalAmount, path);
-
-            // Account for .1% default AMM slippage.
-            totalAmount = (amountIn[0] * 1001) / 1000;
+            totalAmount = IKlimaInfinity(infinity).getSourceAmountSpecificRetirement(
+                _sourceToken,
+                _poolToken,
+                _poolAmount
+            );
+        } else {
+            totalAmount = IKlimaInfinity(infinity).getSourceAmountDefaultRetirement(
+                _sourceToken,
+                _poolToken,
+                _poolAmount
+            );
         }
 
         return (totalAmount, fee);

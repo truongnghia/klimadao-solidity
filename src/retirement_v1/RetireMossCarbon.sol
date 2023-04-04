@@ -15,6 +15,7 @@ import "./interfaces/IwsKLIMA.sol";
 import "./interfaces/IKlimaCarbonRetirements.sol";
 import "./interfaces/ICarbonChain.sol";
 import "./interfaces/IKlimaRetirementAggregator.sol";
+import "../infinity/interfaces/IKlimaInfinity.sol";
 
 contract RetireMossCarbon is Initializable, ContextUpgradeable, OwnableUpgradeable {
     using SafeERC20Upgradeable for IERC20Upgradeable;
@@ -33,6 +34,7 @@ contract RetireMossCarbon is Initializable, ContextUpgradeable, OwnableUpgradeab
     address public masterAggregator;
     mapping(address => bool) public isPoolToken;
     mapping(address => address) public poolRouter;
+    address constant infinity = 0x8cE54d9625371fb2a068986d32C85De8E6e995f8;
 
     /** === Event Setup === */
 
@@ -78,41 +80,41 @@ contract RetireMossCarbon is Initializable, ContextUpgradeable, OwnableUpgradeab
     ) public {
         require(isPoolToken[_poolToken], "Not a Moss Carbon Token");
 
-        // Transfer source tokens
+        uint256 totalSource = !_amountInCarbon
+            ? _amount
+            : IKlimaInfinity(infinity).getSourceAmountDefaultRetirement(_sourceToken, _poolToken, _amount);
 
-        (uint256 sourceAmount, uint256 totalCarbon, uint256 fee) = _transferSourceTokens(
-            _sourceToken,
-            _poolToken,
-            _amount,
-            _amountInCarbon
-        );
+        IERC20Upgradeable(_sourceToken).transferFrom(_msgSender(), address(this), totalSource);
 
-        // Get the pool tokens
+        IERC20Upgradeable(_sourceToken).safeIncreaseAllowance(infinity, totalSource);
 
-        if (_sourceToken != _poolToken) {
-            // Swap the source to get pool
-            if (_amountInCarbon) {
-                // swapTokensForExactTokens
-                _swapForExactCarbon(_sourceToken, _poolToken, totalCarbon, sourceAmount, _retiree);
-            } else {
-                // swapExactTokensForTokens
-                (_amount, fee) = _swapExactForCarbon(_sourceToken, _poolToken, sourceAmount);
-            }
-        } else if (!_amountInCarbon) {
-            // Calculate the fee and adjust if pool token is provided with false bool
-            fee = (_amount * feeAmount) / 1000;
-            _amount = _amount - fee;
-        }
+        if (_amountInCarbon)
+            IKlimaInfinity(infinity).retireExactCarbonDefault(
+                _sourceToken,
+                _poolToken,
+                totalSource,
+                _amount,
+                "KlimaDAO Retirement Aggregator",
+                _beneficiaryAddress,
+                _beneficiaryString,
+                _retirementMessage,
+                0
+            );
+        else
+            IKlimaInfinity(infinity).retireExactSourceDefault(
+                _sourceToken,
+                _poolToken,
+                totalSource,
+                "KlimaDAO Retirement Aggregator",
+                _beneficiaryAddress,
+                _beneficiaryString,
+                _retirementMessage,
+                0
+            );
 
-        // At this point _amount = the amount of carbon to retire
-
-        // Retire the tokens
-        _retireCarbon(_amount, _beneficiaryAddress, _beneficiaryString, _retirementMessage, _poolToken);
-
-        // Send the fee to the treasury
-        if (feeAmount > 0) {
-            IERC20Upgradeable(_poolToken).safeTransfer(IKlimaRetirementAggregator(masterAggregator).treasury(), fee);
-        }
+        // Account for potential leftover trade dust and return to caller
+        uint256 remainingSource = IERC20Upgradeable(_sourceToken).balanceOf(address(this));
+        if (remainingSource > 0) IERC20Upgradeable(_sourceToken).transfer(_retiree, remainingSource);
     }
 
     /**
@@ -246,13 +248,18 @@ contract RetireMossCarbon is Initializable, ContextUpgradeable, OwnableUpgradeab
         uint256 fee = (_poolAmount * feeAmount) / 1000;
         uint256 totalAmount = _poolAmount + fee;
 
-        if (_sourceToken != _poolToken) {
-            address[] memory path = getSwapPath(_sourceToken, _poolToken);
-
-            uint256[] memory amountIn = IUniswapV2Router02(poolRouter[_poolToken]).getAmountsIn(totalAmount, path);
-
-            // Account for .1% default AMM slippage.
-            totalAmount = (amountIn[0] * 1001) / 1000;
+        if (_specificRetire) {
+            totalAmount = IKlimaInfinity(infinity).getSourceAmountSpecificRetirement(
+                _sourceToken,
+                _poolToken,
+                _poolAmount
+            );
+        } else {
+            totalAmount = IKlimaInfinity(infinity).getSourceAmountDefaultRetirement(
+                _sourceToken,
+                _poolToken,
+                _poolAmount
+            );
         }
 
         return (totalAmount, fee);

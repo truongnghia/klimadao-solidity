@@ -556,9 +556,6 @@ contract KlimaRetirementAggregator is Initializable, ContextUpgradeable, Ownable
                 _amount,
                 false
             );
-            if (_sourceToken == wsKLIMA) {
-                sourceAmount = IwsKLIMA(wsKLIMA).sKLIMATowKLIMA(sourceAmount);
-            }
         } else {
             sourceAmount = _amount;
 
@@ -604,9 +601,6 @@ contract KlimaRetirementAggregator is Initializable, ContextUpgradeable, Ownable
                 _amount,
                 true
             );
-            if (_sourceToken == wsKLIMA) {
-                sourceAmount = IwsKLIMA(wsKLIMA).sKLIMATowKLIMA(sourceAmount);
-            }
         } else {
             sourceAmount = _amount;
 
